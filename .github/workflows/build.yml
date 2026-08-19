@@ -1,0 +1,89 @@
+name: build
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install ARM toolchain
+        uses: carlosperate/arm-none-eabi-gcc-action@v1
+        with:
+          release: '13.2.Rel1'
+
+      - name: Build
+        run: |
+          if [ -f Makefile ]; then
+            make
+          elif [ -f makefile ]; then
+            make -f makefile
+          elif [ -f CMakeLists.txt ]; then
+            mkdir -p build && cd build && cmake .. && make
+          else
+            echo "No build system found"
+            exit 1
+          fi
+
+      - name: Find artifacts
+        id: find
+        run: |
+          ELF=$(find . -name "*.elf" -not -path "./.git/*" | head -1)
+          if [ -z "$ELF" ]; then
+            echo "No .elf file found"
+            exit 1
+          fi
+          echo "elf=$ELF" >> "$GITHUB_OUTPUT"
+
+          REPL=$(find . -name "*.repl" -not -path "./.git/*" | head -1)
+          if [ -n "$REPL" ]; then
+            echo "repl=$REPL" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Prepare artifact
+        run: |
+          ELF_PATH=$(realpath "${{ steps.find.outputs.elf }}")
+          if [ "$ELF_PATH" != "$(realpath app.elf 2>/dev/null || echo none)" ]; then
+            cp "${{ steps.find.outputs.elf }}" app.elf
+          fi
+
+          if [ -n "${{ steps.find.outputs.repl }}" ]; then
+            REPL_PATH=$(realpath "${{ steps.find.outputs.repl }}")
+            if [ "$REPL_PATH" != "$(realpath platform.repl 2>/dev/null || echo none)" ]; then
+              cp "${{ steps.find.outputs.repl }}" platform.repl
+            fi
+          fi
+
+          if [ ! -f platform.json ]; then
+            echo '{"platform_repl": "platforms/boards/renesas-ck_ra6m5.repl", "uart_peripheral": "sysbus.sci0"}' > platform.json
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-elf
+          path: |
+            app.elf
+            platform.json
+            platform.repl
+
+      - name: Notify backend
+        if: env.WEBHOOK_URL != '' && always()
+        continue-on-error: true
+        env:
+          WEBHOOK_URL: ${{ secrets.BACKEND_WEBHOOK_URL }}
+          WEBHOOK_SECRET: ${{ secrets.BACKEND_WEBHOOK_SECRET }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          BRANCH: ${{ github.ref_name }}
+          COMMIT: ${{ github.sha }}
+          STATUS: ${{ job.status }}
+        run: python3 .github/notify.py

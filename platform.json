@@ -1,0 +1,4 @@
+{
+  "platform_repl": "platform.repl",
+  "uart_peripheral": "sysbus.sci0"
+}
