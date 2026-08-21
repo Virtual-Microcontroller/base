@@ -1,0 +1,154 @@
+name: build-firmware
+
+# Reusable. Student repos call this instead of carrying their own copy, so a
+# fix here reaches every repo on its next push rather than only repos created
+# afterwards.
+#
+# `actions/checkout` below checks out the CALLER's repository: in a reusable
+# workflow the github context always refers to the caller, so this builds the
+# student's firmware, not this repo's.
+on:
+  workflow_call:
+    inputs:
+      renode-version:
+        description: Renode release used for the simulator check.
+        type: string
+        default: '1.15.3'
+      expected-output:
+        description: String the firmware must print on the UART.
+        type: string
+        default: 'Hello world!'
+      artifact-retention-days:
+        description: How long to keep app.elf. The backend downloads it at once.
+        type: number
+        default: 7
+    secrets:
+      BACKEND_WEBHOOK_URL:
+        required: false
+      BACKEND_WEBHOOK_SECRET:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      RENODE_VERSION: ${{ inputs.renode-version }}
+      # Job-level so the notify step's `if:` can read it. A step cannot
+      # reliably reference a variable declared in its own `env:` block.
+      WEBHOOK_URL: ${{ secrets.BACKEND_WEBHOOK_URL }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+
+      - name: Install ARM toolchain
+        uses: carlosperate/arm-none-eabi-gcc-action@98c40e51546516419841748d3210c290df0d2c6c # v1.13.0
+        with:
+          release: '13.2.Rel1'
+
+      - name: Restore cached Renode
+        id: renode-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: renode_${{ inputs.renode-version }}-dotnet_portable
+          key: renode-${{ runner.os }}-${{ inputs.renode-version }}
+
+      - name: Install Renode
+        if: steps.renode-cache.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL -o renode.tar.gz \
+            "https://github.com/renode/renode/releases/download/v${RENODE_VERSION}/renode-${RENODE_VERSION}.linux-portable-dotnet.tar.gz"
+          tar -xzf renode.tar.gz
+          rm renode.tar.gz
+
+      - name: Add Renode to PATH
+        run: echo "$(pwd)/renode_${RENODE_VERSION}-dotnet_portable" >> "$GITHUB_PATH"
+
+      - name: Build
+        run: |
+          if [ -f Makefile ]; then
+            make
+          elif [ -f makefile ]; then
+            make -f makefile
+          elif [ -f CMakeLists.txt ]; then
+            mkdir -p build && cd build && cmake .. && make
+          else
+            echo "No build system found"
+            exit 1
+          fi
+
+      - name: Find artifacts
+        id: find
+        run: |
+          ELF=$(find . -name "*.elf" -not -path "./.git/*" | head -1)
+          if [ -z "$ELF" ]; then
+            echo "No .elf file found"
+            exit 1
+          fi
+          echo "elf=$ELF" >> "$GITHUB_OUTPUT"
+
+          REPL=$(find . -name "*.repl" -not -path "./.git/*" | head -1)
+          if [ -n "$REPL" ]; then
+            echo "repl=$REPL" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Prepare artifact
+        run: |
+          ELF_PATH=$(realpath "${{ steps.find.outputs.elf }}")
+          if [ "$ELF_PATH" != "$(realpath app.elf 2>/dev/null || echo none)" ]; then
+            cp "${{ steps.find.outputs.elf }}" app.elf
+          fi
+
+          if [ -n "${{ steps.find.outputs.repl }}" ]; then
+            REPL_PATH=$(realpath "${{ steps.find.outputs.repl }}")
+            if [ "$REPL_PATH" != "$(realpath platform.repl 2>/dev/null || echo none)" ]; then
+              cp "${{ steps.find.outputs.repl }}" platform.repl
+            fi
+          fi
+
+          if [ ! -f platform.json ]; then
+            echo '{"platform_repl": "platforms/boards/renesas-ck_ra6m5.repl", "uart_peripheral": "sysbus.sci0"}' > platform.json
+          fi
+
+      # Building is not the same as working. Without this a student can ship
+      # firmware that compiles and produces no UART output at all, and only
+      # find out when they press Run in the simulator.
+      - name: Verify in Renode
+        env:
+          EXPECTED: ${{ inputs.expected-output }}
+        run: |
+          if [ -f Makefile ] && grep -q '^test:' Makefile; then
+            make test
+          else
+            python3 tests/run_renode_test.py --elf app.elf --expected "$EXPECTED"
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: app-elf
+          path: |
+            app.elf
+            platform.json
+            platform.repl
+          if-no-files-found: error
+          retention-days: ${{ inputs.artifact-retention-days }}
+
+      - name: Notify backend
+        if: always() && env.WEBHOOK_URL != ''
+        continue-on-error: true
+        env:
+          WEBHOOK_SECRET: ${{ secrets.BACKEND_WEBHOOK_SECRET }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          BRANCH: ${{ github.ref_name }}
+          COMMIT: ${{ github.sha }}
+          STATUS: ${{ job.status }}
+        run: python3 .github/notify.py

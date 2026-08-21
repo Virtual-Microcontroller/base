@@ -1,6 +1,7 @@
 CROSS  = arm-none-eabi-
 CC     = $(CROSS)gcc
 OBJCOPY = $(CROSS)objcopy
+PYTHON ?= python3
 
 CFLAGS  = -mcpu=cortex-m33 -mthumb -mfloat-abi=soft -nostdlib -ffreestanding -Os -Wall -Wextra -Werror -ffunction-sections -fdata-sections
 LDFLAGS = -T link.ld -Wl,--gc-sections -Wl,-Map=app.map
@@ -22,4 +23,7 @@ app.hex: app.elf
 clean:
 	rm -f $(OBJS) app.elf app.hex app.map
 
-.PHONY: all clean
+test: app.elf
+	$(PYTHON) tests/run_renode_test.py --elf app.elf --expected "Hello world!"
+
+.PHONY: all clean test

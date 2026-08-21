@@ -2,3 +2,6 @@
 *.elf
 *.hex
 *.map
+*.bin
+platform.repl
+__pycache__/
