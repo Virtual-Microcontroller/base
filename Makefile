@@ -23,7 +23,9 @@ app.hex: app.elf
 clean:
 	rm -f $(OBJS) app.elf app.hex app.map
 
+# No --expected: the check only requires the firmware to produce UART
+# output. Add --expected "..." if an assignment must print exact text.
 test: app.elf
-	$(PYTHON) tests/run_renode_test.py --elf app.elf --expected "Hello world!"
+	$(PYTHON) tests/run_renode_test.py --elf app.elf
 
 .PHONY: all clean test

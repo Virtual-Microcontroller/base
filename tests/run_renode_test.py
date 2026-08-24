@@ -94,11 +94,16 @@ def load_platform(elf_path):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--elf", required=True)
-    parser.add_argument("--expected", default="Hello world!")
+    # No default: an unset --expected means "any UART output passes". The
+    # check exists to catch firmware that runs and says nothing, not to
+    # police what a student prints.
+    parser.add_argument("--expected", default=None)
     parser.add_argument("--renode-bin",
                         default=os.environ.get("RENODE_BIN", "renode"))
     parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--timeout", type=float, default=30.0)
+    parser.add_argument("--settle", type=float, default=2.0,
+                        help="seconds to keep reading before accepting output")
     args = parser.parse_args()
 
     port = args.port or random.randint(20000, 40000)
@@ -162,19 +167,36 @@ def main():
                 if neg:
                     sock.sendall(neg)
                 buf = strip_telnet(first)
+                # With no expected string, give the firmware a moment to finish
+                # its line rather than passing on the first byte -- the point is
+                # to report what it said, not merely that it said something.
+                settle = time.time() + args.settle
                 while time.time() < deadline:
+                    if args.expected is None and time.time() > settle and buf.strip():
+                        break
                     try:
                         data = sock.recv(4096)
                     except socket.timeout:
+                        if args.expected is None and buf.strip():
+                            break
                         continue
                     if not data:
                         break
                     buf += strip_telnet(data)
-                    if args.expected.encode() in buf:
+                    if args.expected is not None and args.expected.encode() in buf:
                         print(f"PASS: found {args.expected!r} on the UART")
                         return 0
-            print(f"FAIL: expected {args.expected!r} "
-                  f"but the UART only produced {buf!r}")
+                if args.expected is None and buf.strip():
+                    shown = buf.decode(errors="replace").strip()
+                    print(f"PASS: firmware produced UART output: {shown!r}")
+                    return 0
+            if args.expected is None:
+                print("FAIL: firmware ran but produced no UART output at all. "
+                      "It compiled, so check that main() reaches your uart_puts "
+                      "call and that the transmit-ready flag is declared volatile.")
+            else:
+                print(f"FAIL: expected {args.expected!r} "
+                      f"but the UART only produced {buf!r}")
             return 1
         finally:
             proc.terminate()

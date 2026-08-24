@@ -36,12 +36,24 @@ make test
 ```
 
 Loads `app.elf` onto the board described by `platform.json` and checks that
-`Hello world!` appears on the UART. The starter code passes. Once you change
-what `main.c` prints, update the expected string in the `test` target of the
-`Makefile` to match.
+the firmware **says something** on the UART. It does not care what. Change
+what `main.c` prints as often as you like; the check keeps passing.
 
-This same check runs in CI, so a build that compiles but produces no output
-fails there rather than surprising you in the simulator.
+What it catches is silence: firmware that compiles cleanly and produces no
+output at all. That is a real bug and an easy one to write - a `main()` that
+never reaches your `uart_puts`, or a status-flag loop that spins forever
+because the register is not `volatile`. Without this check you would only
+find out when you pressed Run and the terminal stayed empty.
+
+If an assignment must print exact text, add the string to the `test` target:
+
+```make
+test: app.elf
+	$(PYTHON) tests/run_renode_test.py --elf app.elf --expected "Ready"
+```
+
+The same check runs in CI, so silent firmware fails there rather than
+surprising you in the simulator.
 
 ## Push it
 
