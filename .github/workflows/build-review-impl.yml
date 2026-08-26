@@ -1,0 +1,218 @@
+name: build-review-impl
+
+# Reviews a build that recovered from failure, comments on the commit, and
+# removes the AI-HINT markers so the finished file is the student's own.
+#
+# Reusable body. Student repositories carry only the trigger; this holds the
+# behaviour, so a correction here reaches every repository on its next failed
+# build rather than only repositories created afterwards.
+#
+# In a called workflow the github context is the CALLER's, so
+# github.event.workflow_run.* below refers to the student's failed build, and
+# actions/checkout resolves to the student's repository.
+on:
+  workflow_call:
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+
+permissions:
+  contents: write
+  actions: read
+
+env:
+  HINT_RE: '^[[:space:]]*/\* AI-HINT:.*\*/[[:space:]]*$'
+  DAILY_CAP: 10
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.workflow_run.head_branch }}
+          fetch-depth: 0
+
+      - name: Decide whether this build is a recovery
+        id: guard
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          set -euo pipefail
+
+          tip=$(git rev-parse HEAD)
+          if [ "$tip" != "$HEAD_SHA" ]; then
+            echo "branch has moved: tip=$tip reviewed_run=$HEAD_SHA"
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # A build that was already green and stayed green is not a teaching
+          # moment. Two signals say otherwise: markers left behind by Build
+          # Hints, or a preceding failed build on this branch.
+          markers=$( { grep -rlE "$HINT_RE" --include='*.c' --include='*.h' . || true; } | wc -l )
+          previous=$(gh run list --workflow build.yml --branch "$BRANCH" \
+                       --limit 2 --json conclusion \
+                       --jq '.[1].conclusion // "none"')
+          echo "files carrying markers: $markers | previous build: $previous"
+
+          if [ "$markers" -eq 0 ] && [ "$previous" != "failure" ]; then
+            echo "not a recovery; nothing to review"
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Spend limit. Only runs that actually consulted the model cost
+          # anything, so a run that stopped at this guard must not consume the
+          # budget. Counting runs rather than invocations made the limit far
+          # tighter and less predictable than intended.
+          #
+          # No notice is posted here: build-hints already tells the student when
+          # the allowance runs out, and saying it twice would be noise.
+          today=$(date -u +%Y-%m-%d)
+          jq_today="[.[] | select(.createdAt | startswith(\"$today\"))] | .[].databaseId"
+          ids=$(gh run list --workflow build-review.yml --limit 60 --json databaseId,createdAt --jq "$jq_today")
+          jq_used='[.jobs[].steps[]? | select(.name | test("claude-code-action")) | select(.conclusion == "success")] | length'
+          used=0
+          for id in $ids; do
+            n=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/$id/jobs" --jq "$jq_used" 2>/dev/null || echo 0)
+            used=$((used + n))
+          done
+          echo "model invocations today: $used of $DAILY_CAP"
+          if [ "$used" -ge "$DAILY_CAP" ]; then
+            echo "daily cap reached"
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "proceed=true" >> "$GITHUB_OUTPUT"
+
+      - uses: anthropics/claude-code-action@3f854a8fb5146b39d5cbf8b57f70d80810e1366f # v1
+        if: steps.guard.outputs.proceed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          claude_args: >-
+            --allowedTools "Bash(git show:*),Bash(git log:*),Bash(git diff:*),Bash(gh run view:*),Read,Glob,Grep,Write"
+          prompt: |
+            You are a lab teaching assistant for an embedded systems course.
+            A student's firmware build has just gone green after failing.
+
+            Commit: ${{ github.event.workflow_run.head_sha }}
+            Branch: ${{ github.event.workflow_run.head_branch }}
+            Repository: ${{ github.repository }}
+
+            Look at what they changed:
+              git show ${{ github.event.workflow_run.head_sha }}
+
+            The source may still contain /* AI-HINT: ... */ lines. Those are
+            the hints you gave them on the previous failure. They are removed
+            automatically after you finish, so ignore them as code, but do
+            read them: they tell you what the student was struggling with.
+
+            THE PROJECT
+            Bare-metal C for the Renesas CK-RA6M5 (ARM Cortex-M33). startup.c
+            is the vector table and reset handler, link.ld the memory layout,
+            uart.c drives SCI0, main.c is the entry point. Built with -Wall
+            -Wextra -Werror, so every warning was a build error.
+
+            WRITE A SHORT REVIEW to a file called review.md in the repository
+            root, using the Write tool. That file is posted as a comment on
+            their commit and then deleted. Do not create any other file.
+
+            WHAT THE REVIEW SHOULD SAY
+            - Open by confirming what they fixed, in one sentence, so they
+              know the loop is closed.
+            - Say why the fix works, briefly. Understanding why matters more
+              than the green tick.
+            - Then at most two observations about the code as it now stands.
+              Correctness first: a missing `volatile` on a memory-mapped
+              register, a register written before its clock is enabled, an
+              interrupt flag never cleared. Style only if nothing else.
+            - If the fix works but for the wrong reason, or works by accident,
+              say so plainly. That is the most valuable thing you can tell
+              them.
+            - If the code is genuinely fine, say that and stop. Do not invent
+              criticism to fill space.
+
+            TONE AND SHAPE
+            Address the student directly. Under 200 words. Markdown, no
+            heading larger than ###. Encouraging and matter-of-fact.
+
+            You do not run git commands that write, and you do not push or
+            comment anything yourself. Write review.md and stop.
+
+      - name: Post the review and clear the markers
+        if: steps.guard.outputs.proceed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+
+          if [ -f review.md ]; then
+            gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/comments" \
+              -f body="$(cat review.md)" > /dev/null
+            echo "posted commit comment on ${HEAD_SHA}"
+            {
+              echo "## Build review"
+              echo
+              cat review.md
+            } >> "$GITHUB_STEP_SUMMARY"
+            rm review.md
+          else
+            echo "assistant produced no review"
+          fi
+
+          # Strip the markers so the student's finished file is their own.
+          find . \( -name '*.c' -o -name '*.h' \) -print | while read -r f; do
+            grep -vE "$HINT_RE" "$f" > "$f.stripped" || true
+            mv "$f.stripped" "$f"
+          done
+
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "no markers to remove"
+            exit 0
+          fi
+
+          # Same guarantee as Build Hints: only marker lines may move, and
+          # only in C sources. If anything else changed, push nothing.
+          if git diff --name-only | grep -vE '\.(c|h)$' > /dev/null; then
+            echo "::error::a file other than .c or .h changed; refusing to push"
+            exit 1
+          fi
+          git diff -U0 | grep -E '^[+-]' | grep -vE '^(\+\+\+|---)' \
+            > /tmp/changed.txt || true
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            if ! printf '%s\n' "${line:1}" | grep -qE "$HINT_RE"; then
+              echo "::error::non-marker line in diff: $line"
+              exit 1
+            fi
+          done < /tmp/changed.txt
+
+          # The branch may have moved while the agent was thinking. The guard
+          # cannot catch that: it ran before the agent did. Without this check
+          # git push fails as a non-fast-forward, and the student is shown a
+          # red workflow they did not cause and cannot act on.
+          git fetch -q origin "$BRANCH"
+          remote_tip=$(git rev-parse "origin/${BRANCH}")
+          if [ "$remote_tip" != "$HEAD_SHA" ]; then
+            echo "branch moved while the assistant was working; discarding"
+            echo "  triggering commit: $HEAD_SHA"
+            echo "  current tip:       $remote_tip"
+            exit 0
+          fi
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Clear build hint markers after run ${RUN_ID} [skip ci]"
+          git push origin "HEAD:refs/heads/${BRANCH}"

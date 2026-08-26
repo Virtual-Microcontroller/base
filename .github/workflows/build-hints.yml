@@ -1,99 +1,39 @@
 name: Build Hints
 
-# Uses Anthropic's official action rather than gh-aw, because gh-aw does not
-# accept Claude subscription OAuth tokens -- only an API key. This one does,
-# so a Pro/Max plan can drive it.
+# Writes hints INTO the student's source as /* AI-HINT: ... */ lines and
+# pushes them to their branch, so help waits in the editor after a pull.
+#
+# Trigger only. workflow_run cannot be delegated -- it must be declared in the
+# repository that reacts to the event -- so this file stays here while the
+# behaviour lives in the course template. Editing this file is rarely what you
+# want; change build-hints-impl.yml in Virtual-Microcontroller/base.
 on:
   workflow_run:
     workflows: [build]
     types: [completed]
 
+# Declared here because a called workflow may reduce permissions but never
+# elevate them. The body needs contents: write to push markers.
 permissions:
-  contents: read
+  contents: write
   actions: read
-  issues: write
 
 concurrency:
-  group: build-hints-${{ github.event.workflow_run.head_sha }}
+  group: hints-${{ github.event.workflow_run.head_sha }}
   cancel-in-progress: false
 
 jobs:
   hints:
-    # workflow_run fires on success too. Only a failed build needs hints.
-    if: github.event.workflow_run.conclusion == 'failure'
-    runs-on: ubuntu-latest
-    timeout-minutes: 12
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-
-      - uses: anthropics/claude-code-action@3f854a8fb5146b39d5cbf8b57f70d80810e1366f # v1
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          claude_args: >-
-            --allowedTools "Bash(gh run view:*),Bash(gh run list:*),Bash(gh issue list:*),Bash(gh issue create:*),Bash(gh issue comment:*),Read,Glob,Grep"
-          prompt: |
-            You are a lab teaching assistant for an embedded systems course.
-            A student's firmware build just failed in this repository.
-
-            Failed run id: ${{ github.event.workflow_run.id }}
-            Branch: ${{ github.event.workflow_run.head_branch }}
-            Repository: ${{ github.repository }}
-
-            Read the failure with:
-              gh run view ${{ github.event.workflow_run.id }} --log-failed
-
-            THE PROJECT
-            Bare-metal C for the Renesas CK-RA6M5 (ARM Cortex-M33).
-            startup.c is the vector table and reset handler. link.ld is the
-            memory layout, flash at 0x00000000 and RAM at 0x20000000. uart.c
-            drives SCI0. main.c is the entry point. `make` builds app.elf and
-            `make test` runs it in Renode and requires the expected string on
-            the UART. Compiler flags include -Wall -Wextra -Werror, so every
-            warning is a build error.
-
-            WHAT TO DO
-            Find the FIRST real error. Later errors are usually consequences.
-
-            Decide what kind of failure it is:
-            - Infrastructure or CI: toolchain install failed, a download timed
-              out, a step was cancelled. Nothing is being taught. Say plainly
-              what broke and that re-running fixes it. Do not make it a puzzle.
-            - The student's code: compile error, linker error, or `make test`
-              not finding the expected UART output. Give hints, per below.
-
-            GIVE HINTS, NOT SOLUTIONS. This rule matters most.
-            - Never write out the corrected code. No fixed lines, no diffs, no
-              "change X to Y", no code block containing the answer.
-            - Name the concept and point at the place. Quote the exact compiler
-              message and translate it into plain language.
-            - Prefer one guiding question over a lecture. Two or three hints.
-            - If the error names a file and line, say so and let them look.
-
-            ESCALATE IF THEY ARE STUCK. Check recent runs with
-            `gh run list --limit 10`. If the same error has failed two or three
-            times running, the earlier hint did not land, so get more specific
-            each time. Past four, tell them to ask an instructor and summarise
-            what you already suggested.
-
-            COMMON HERE: -Werror promoting an unused variable; `undefined
-            reference` from a file missing in SRCS; `region FLASH overflowed`;
-            libc calls under -nostdlib; a build that compiles but produces no
-            UART output; and a missing `volatile` on a memory-mapped register,
-            which produces no diagnostic at all.
-
-            WHERE TO POST
-            Look for an existing open issue with `gh issue list --state open
-            --search "build help"`. If one exists, add a comment to it so the
-            progression stays in one thread. Otherwise create one titled
-            "[build help] <short description>". Link the failed run.
-
-            Never push a commit, never open a pull request, never edit their
-            code. Commenting is your only job.
-
-            TONE
-            Encouraging and matter-of-fact. A failing build is normal in
-            embedded work. Address the student directly, stay under about 200
-            words, and end with the single most useful thing to check next.
+    # Four gates before the body is even called:
+    #   the build actually failed;
+    #   an instructor has not switched assistance off for this repository;
+    #   the commit was not made by the bot itself, which is what stops the
+    #     assistant from answering its own push;
+    #   the build was not skipped, which [skip ci] causes.
+    if: >-
+      github.event.workflow_run.conclusion == 'failure' &&
+      vars.AI_HINTS_ENABLED != 'false' &&
+      github.event.workflow_run.head_commit.author.name != 'github-actions[bot]'
+    uses: Virtual-Microcontroller/base/.github/workflows/build-hints-impl.yml@main
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

@@ -17,6 +17,8 @@ jobs:
     # The build itself lives in the course template so a fix reaches every
     # student repo on its next push. Editing this file is rarely what you
     # want -- change build-firmware.yml in Virtual-Microcontroller/base.
+    # `uses:` cannot take an expression, so the org and template repo are
+    # hardcoded. Change this line if you deploy the course elsewhere.
     uses: Virtual-Microcontroller/base/.github/workflows/build-firmware.yml@main
     # Passed explicitly rather than `secrets: inherit`: the build needs these
     # two and has no business seeing the AI key.

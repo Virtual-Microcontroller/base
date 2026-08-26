@@ -1,0 +1,33 @@
+name: Build Review
+
+# Reviews a build that recovered from failure, comments on the commit, and
+# removes the AI-HINT markers so the finished file is the student's own.
+#
+# Trigger only. workflow_run cannot be delegated -- it must be declared in the
+# repository that reacts to the event -- so this file stays here while the
+# behaviour lives in the course template. Editing this file is rarely what you
+# want; change build-review-impl.yml in Virtual-Microcontroller/base.
+on:
+  workflow_run:
+    workflows: [build]
+    types: [completed]
+
+# Declared here because a called workflow may reduce permissions but never
+# elevate them. The body needs contents: write to push markers.
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: review-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+jobs:
+  review:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      vars.AI_HINTS_ENABLED != 'false' &&
+      github.event.workflow_run.head_commit.author.name != 'github-actions[bot]'
+    uses: Virtual-Microcontroller/base/.github/workflows/build-review-impl.yml@main
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

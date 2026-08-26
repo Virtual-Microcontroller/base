@@ -64,13 +64,36 @@ and press **Run** to see your program's output.
 ## The AI teaching assistant
 
 If your instructor enabled it, an AI assistant helps when things break.
-**When a build fails**, it reads the error and opens an issue in this
-repository with hints about what to look at.
+**When a build fails**, it reads the error and writes hints into your code as
+comment lines, then pushes them to your branch:
+
+```c
+/* AI-HINT: this loop reads a hardware register - what stops the compiler
+   from caching it in a register instead of re-reading it? */
+while (uart_busy()) { }
+```
+
+So the workflow is:
+
+1. You push code that does not build.
+2. Wait about a minute, then **`git pull`**.
+3. The hints are now in your files, on the lines that need attention.
+4. Fix the code and delete nothing — the markers are removed for you.
+5. Push again.
+
+When the build passes, the assistant reviews what you changed and comments on
+your commit. GitHub emails that to you. It also clears the `AI-HINT` lines, so
+your finished file is your own work with no leftovers.
+
+**Pull before you start fixing.** If you edit without pulling, your push is
+rejected because the assistant has already added a commit. If you would rather
+not wait, fix it yourself and push — the assistant notices your branch has
+moved on and stays out of the way.
 
 It gives **hints, not answers** — working out the fix is the exercise. If the
 same build keeps failing it gets more specific each time, and after several
-attempts it will tell you to ask your instructor. It cannot change your code;
-it can only comment.
+attempts it will tell you to ask your instructor. It can only add and remove
+its own comment lines; it cannot change a line of your code.
 
 ## When the build fails
 
