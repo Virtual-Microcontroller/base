@@ -184,11 +184,17 @@ jobs:
 
           # Same guarantee as Build Hints: only marker lines may move, and
           # only in C sources. If anything else changed, push nothing.
-          if git diff --name-only | grep -vE '\.(c|h)$' > /dev/null; then
+          if git diff --name-only --ignore-space-at-eol | grep -vE '\.(c|h)$' > /dev/null; then
             echo "::error::a file other than .c or .h changed; refusing to push"
             exit 1
           fi
-          git diff -U0 | grep -E '^[+-]' | grep -vE '^(\+\+\+|---)' \
+          # --ignore-space-at-eol: the model sometimes strips trailing
+          # whitespace from a line it is inserting above, and refusing the
+          # whole change over that means the student gets no hint and a red
+          # workflow they did not cause. Trailing whitespace cannot change C
+          # semantics, so it is the one difference tolerated here. Every other
+          # edit to a non-marker line is still rejected.
+          git diff -U0 --ignore-space-at-eol | grep -E '^[+-]' | grep -vE '^(\+\+\+|---)' \
             > /tmp/changed.txt || true
           while IFS= read -r line; do
             [ -z "$line" ] && continue

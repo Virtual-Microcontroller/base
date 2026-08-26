@@ -217,15 +217,21 @@ jobs:
           bad=0
 
           # Only C sources may be touched.
-          if git diff --name-only | grep -vE '\.(c|h)$' > /dev/null; then
+          if git diff --name-only --ignore-space-at-eol | grep -vE '\.(c|h)$' > /dev/null; then
             echo "::error::a file other than .c or .h was modified"
-            git diff --name-only | grep -vE '\.(c|h)$' | sed 's/^/    /'
+            git diff --name-only --ignore-space-at-eol | grep -vE '\.(c|h)$' | sed 's/^/    /'
             bad=1
           fi
 
           # Every added or removed line must be a marker line. This is what
           # makes "comments only" a control rather than a request.
-          git diff -U0 | grep -E '^[+-]' | grep -vE '^(\+\+\+|---)' \
+          # --ignore-space-at-eol: the model sometimes strips trailing
+          # whitespace from a line it is inserting above, and refusing the
+          # whole change over that means the student gets no hint and a red
+          # workflow they did not cause. Trailing whitespace cannot change C
+          # semantics, so it is the one difference tolerated here. Every other
+          # edit to a non-marker line is still rejected.
+          git diff -U0 --ignore-space-at-eol | grep -E '^[+-]' | grep -vE '^(\+\+\+|---)' \
             > /tmp/changed.txt || true
 
           while IFS= read -r line; do
@@ -259,6 +265,7 @@ jobs:
       - name: Push the hints
         if: steps.check.outputs.push == 'true'
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BRANCH: ${{ github.event.workflow_run.head_branch }}
           RUN_ID: ${{ github.event.workflow_run.id }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
@@ -291,3 +298,31 @@ jobs:
           # second protection.
           git commit -m "Add build hints for run ${RUN_ID} [skip ci]"
           git push origin "HEAD:refs/heads/${BRANCH}"
+
+          # Tell the student the hint exists. Nothing else does: GitHub emails
+          # the author when an issue is opened on their repository but not when
+          # a branch is pushed to, so moving help from an issue into a commit
+          # removed the only automatic signal they had. A commit comment does
+          # notify, and is posted by the workflow rather than the model, so it
+          # costs nothing.
+          #
+          # The pointer, never the hint itself. Repeating the text here would
+          # put help back in a browser tab, which is the thing this replaced.
+          {
+            echo "### A hint is waiting in your code"
+            echo
+            echo "The assistant read the failed build and left a comment next to"
+            echo "the line that needs attention."
+            echo
+            echo "Run \`git pull\`, then look for a line starting with"
+            echo "\`AI-HINT\` near the error."
+            echo
+            echo "It is a hint, not the answer -- working out the fix is the"
+            echo "exercise. The marker is cleared for you once the build passes."
+          } > hintnote.md
+          if gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/comments" -F body=@hintnote.md > /dev/null 2>&1; then
+            echo "told the student a hint is waiting"
+          else
+            echo "::warning::could not post the hint notice"
+          fi
+          rm -f hintnote.md
