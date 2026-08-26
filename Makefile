@@ -6,7 +6,12 @@ PYTHON ?= python3
 CFLAGS  = -mcpu=cortex-m33 -mthumb -mfloat-abi=soft -nostdlib -ffreestanding -Os -Wall -Wextra -Werror -ffunction-sections -fdata-sections
 LDFLAGS = -T link.ld -Wl,--gc-sections -Wl,-Map=app.map
 
-SRCS = startup.c uart.c main.c
+# Every .c in this directory. An exercise that adds a source file needs no
+# edit here -- forgetting to add one produced an `undefined reference` that
+# reads like a code error rather than a build-configuration one.
+# Link order is irrelevant: link.ld places the vector table with
+# KEEP(*(.isr_vector)), so startup.o need not come first.
+SRCS = $(wildcard *.c)
 OBJS = $(SRCS:.c=.o)
 
 all: app.elf app.hex

@@ -15,9 +15,14 @@ on:
         type: string
         default: '1.15.3'
       expected-output:
-        description: String the firmware must print on the UART.
+        description: >-
+          String the firmware must print on the UART. Empty, the default, means
+          any UART output passes, which is what a Makefile `test` target already
+          does. Set it only when an exercise requires exact text: every exercise
+          prints something different, so a shared default is wrong for all but
+          one of them.
         type: string
-        default: 'Hello world!'
+        default: ''
       artifact-retention-days:
         description: How long to keep app.elf. The backend downloads it at once.
         type: number
@@ -126,8 +131,14 @@ jobs:
         run: |
           if [ -f Makefile ] && grep -q '^test:' Makefile; then
             make test
-          else
+          elif [ -n "$EXPECTED" ]; then
             python3 tests/run_renode_test.py --elf app.elf --expected "$EXPECTED"
+          else
+            # Omitted, not empty. An empty --expected is satisfied by any
+            # buffer at all, including no output, so passing "" would let
+            # silent firmware through -- the exact failure this step exists
+            # to catch.
+            python3 tests/run_renode_test.py --elf app.elf
           fi
 
       - name: Upload artifact

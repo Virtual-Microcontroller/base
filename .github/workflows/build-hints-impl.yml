@@ -268,8 +268,12 @@ jobs:
           # cannot catch that: it ran before the agent did. Without this check
           # git push fails as a non-fast-forward, and the student is shown a
           # red workflow they did not cause and cannot act on.
-          git fetch -q origin "$BRANCH"
-          remote_tip=$(git rev-parse "origin/${BRANCH}")
+          # ls-remote asks the server. `git fetch` updates FETCH_HEAD but does
+          # not reliably update refs/remotes/origin/<branch>, so rev-parse can
+          # return a stale value that matches HEAD_SHA and waves the push
+          # through -- which is exactly how this check failed the first time it
+          # was needed, letting a push be rejected as a non-fast-forward.
+          remote_tip=$(git ls-remote origin "refs/heads/${BRANCH}" | cut -f1)
           if [ "$remote_tip" != "$HEAD_SHA" ]; then
             echo "branch moved while the assistant was working; discarding"
             echo "  triggering commit: $HEAD_SHA"
