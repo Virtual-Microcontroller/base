@@ -81,14 +81,14 @@ jobs:
             told=$(gh api "repos/${GITHUB_REPOSITORY}/comments?per_page=100" --jq "$jq_notice" 2>/dev/null || echo 1)
             if [ "$told" -eq 0 ]; then
               {
-                echo "### Assistance paused for today"
+                echo "### 本日の AI サポートは上限に達しました"
                 echo
-                echo "This repository has used its daily allowance of AI assistance."
-                echo "It resets at midnight UTC."
+                echo "このリポジトリは 1 日あたりの AI サポート回数を使い切りました。"
+                echo "UTC の 0 時にリセットされます。"
                 echo
-                echo "Until then: read the **first** error in the Actions log, not"
-                echo "the last -- later errors are usually knock-on effects."
-                echo "If you are stuck, ask an instructor."
+                echo "それまでは Actions のログを自分で読んでください。**最初の**"
+                echo "エラーを見ます。後ろのエラーはその波及であることがほとんどです。"
+                echo "行き詰まったら教員に相談してください。"
                 echo
                 echo "<!-- ai-assist-cap-notice -->"
               } > capnote.md
@@ -126,7 +126,11 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          # Pinned deliberately. The language quality of the hints is
+          # now a user-visible property of this workflow, so it must not
+          # change when the action's default model moves.
           claude_args: >-
+            --model claude-haiku-4-5
             --allowedTools "Bash(gh run view:*),Bash(gh run list:*),Read,Edit,Glob,Grep"
           prompt: |
             You are a lab teaching assistant for an embedded systems course.
@@ -158,12 +162,47 @@ jobs:
             - The student's code: compile error, linker error, or `make test`
               not finding the expected UART output. Leave hints, per below.
 
+            LANGUAGE
+            Write the hint text in Japanese. The students and teachers on this
+            course are Japanese speakers, and a student reads a hint at the
+            moment they are stuck, which is the worst moment to ask them to
+            work in a second language.
+
+            Keep these in English, exactly as they appear:
+            - anything the student must TYPE: keywords (volatile, static,
+              const), type names, function names (HAL_GPIO_TogglePin),
+              register names (MSTPCRB), file names (link.ld), compiler flags
+              (-Werror, -nostdlib)
+            - anything they will SEE VERBATIM in a compiler or linker message,
+              including the quoted message itself
+
+            Everything else is Japanese, concept vocabulary included: prefer
+            割り込み, ベクタテーブル, リンカ, レジスタ over their English
+            equivalents. The test is simple -- if the student has to type it or
+            search for it in the manual, it stays English; if it is an idea
+            they have to understand, it is Japanese.
+
+            Do not translate an identifier. A hint reading
+            揮発性を指定してください is worse than useless, because the
+            student then has to work out that the word to type is volatile.
+
+            Use ASCII spaces for indentation. Never a full-width space (U+3000).
+
+            Examples of the intended result:
+
+              /* AI-HINT: 割り込みハンドラと共有する変数なので volatile が必要です */
+              /* AI-HINT: C の文はどの記号で終わりますか。142 行目を見てください */
+              /* AI-HINT: `undefined reference` はリンカが関数本体を見つけられないという意味です。SRCS にこのファイルは入っていますか */
+
             HOW TO LEAVE A HINT
             Use the Edit tool to insert a line directly ABOVE the line that
             needs attention, in the .c or .h file concerned. The line must
             look exactly like this, on a line of its own:
 
-              /* AI-HINT: your hint text here */
+              /* AI-HINT: ヒント本文 */
+
+            The AI-HINT: prefix is ASCII and never changes. Only the text after
+            it is Japanese: the workflow recognises its own work by that prefix.
 
             Rules that are enforced mechanically after you finish. If you break
             any of them, nothing is pushed and the student gets no help at all:
@@ -185,7 +224,9 @@ jobs:
             - Name the concept and point at the place. Quote the exact
               compiler message and translate it into plain language.
             - Prefer one guiding question over a lecture. Keep each marker to
-              a single line that a student can read at a glance.
+              a single line that a student can read at a glance. Japanese is
+              compact; two short sentences usually fit where one English
+              sentence did.
 
             ESCALATE IF THEY ARE STUCK. Check recent runs with
             `gh run list --limit 10`. If the same error has failed two or three
@@ -201,6 +242,44 @@ jobs:
 
             You do not run git. You do not commit, push, or open anything. You
             edit files and stop. The workflow handles the rest.
+
+      - name: Normalise marker indentation
+        if: steps.guard.outputs.proceed == 'true'
+        run: |
+          set -euo pipefail
+
+          # Now that hints are Japanese, the model can indent a marker with a
+          # full-width space (U+3000). [[:space:]] in the gate below is
+          # ASCII-only, so such a line is not recognised as a marker and the
+          # whole push is refused: a daily-cap slot spent, a red run, and no
+          # help for the student -- over a formatting slip they did not make.
+          #
+          # Rewriting the leading whitespace of a line that is otherwise
+          # exactly a marker cannot touch the student's code and cannot change
+          # what the hint says. A full-width space outside a comment is not
+          # valid C anyway, so this also stops the file failing to compile.
+          python3 - <<'PY'
+          import pathlib, re
+
+          # [^\S\r\n] is "whitespace but not a line break", and Python's \s is
+          # Unicode-aware, so U+3000 is included.
+          MARKER = re.compile(r'^([^\S\r\n]*)(/\* AI-HINT:.*\*/[^\S\r\n]*)$')
+          files = 0
+          for path in list(pathlib.Path('.').rglob('*.c')) + \
+                      list(pathlib.Path('.').rglob('*.h')):
+              text = path.read_text(encoding='utf8')
+              lines, touched = text.split('\n'), False
+              for i, line in enumerate(lines):
+                  m = MARKER.match(line)
+                  if m and any(c not in ' \t' for c in m.group(1)):
+                      lines[i] = ' ' * len(m.group(1)) + m.group(2)
+                      touched = True
+              if touched:
+                  path.write_text('\n'.join(lines), encoding='utf8')
+                  files += 1
+                  print(f'::warning::normalised marker indentation in {path}')
+          print(f'files normalised: {files}')
+          PY
 
       - name: Check the diff before anything is pushed
         id: check
@@ -269,6 +348,7 @@ jobs:
           BRANCH: ${{ github.event.workflow_run.head_branch }}
           RUN_ID: ${{ github.event.workflow_run.id }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          SERVER_URL: ${{ github.server_url }}
         run: |
           set -euo pipefail
           # The branch may have moved while the agent was thinking. The guard
@@ -308,17 +388,22 @@ jobs:
           #
           # The pointer, never the hint itself. Repeating the text here would
           # put help back in a browser tab, which is the thing this replaced.
+          # The link points at the commit just pushed, which is the one
+          # carrying the hint -- not HEAD_SHA, which is the build that failed.
+          hint_sha=$(git rev-parse HEAD)
           {
-            echo "### A hint is waiting in your code"
+            echo "### ヒントが届いています"
             echo
-            echo "The assistant read the failed build and left a comment next to"
-            echo "the line that needs attention."
+            echo "失敗したビルドを読んで、問題のある行のすぐ上に"
+            echo "コメントを入れました。"
             echo
-            echo "Run \`git pull\`, then look for a line starting with"
-            echo "\`AI-HINT\` near the error."
+            echo "\`git pull\` を実行して、エラーの近くにある"
+            echo "\`AI-HINT\` で始まる行を探してください。"
             echo
-            echo "It is a hint, not the answer -- working out the fix is the"
-            echo "exercise. The marker is cleared for you once the build passes."
+            echo "[このコミットを見る](${SERVER_URL}/${GITHUB_REPOSITORY}/commit/${hint_sha})"
+            echo
+            echo "これは答えではなくヒントです。修正を自分で考えることが"
+            echo "演習です。マーカーはビルドが成功した時点で自動的に削除されます。"
           } > hintnote.md
           if gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/comments" -F body=@hintnote.md > /dev/null 2>&1; then
             echo "told the student a hint is waiting"
