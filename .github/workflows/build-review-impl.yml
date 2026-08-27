@@ -173,19 +173,32 @@ jobs:
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
           BRANCH: ${{ github.event.workflow_run.head_branch }}
           RUN_ID: ${{ github.event.workflow_run.id }}
+          SERVER_URL: ${{ github.server_url }}
         run: |
           set -euo pipefail
 
           if [ -f review.md ]; then
-            gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/comments" \
-              -f body="$(cat review.md)" > /dev/null
-            echo "posted commit comment on ${HEAD_SHA}"
+            # Heading and link come from the workflow, not the model: the sha
+            # is known for certain here, and an identical heading every time
+            # is what makes these scannable in a mailbox. GitHub's own subject
+            # line for a commit comment names only the commit.
             {
-              echo "## Build review"
+              echo "### ビルドレビュー — 修正を確認しました"
+              echo
+              echo "対象コミット: [\`${HEAD_SHA:0:7}\`](${SERVER_URL}/${GITHUB_REPOSITORY}/commit/${HEAD_SHA})"
               echo
               cat review.md
-            } >> "$GITHUB_STEP_SUMMARY"
-            rm review.md
+              echo
+              echo "---"
+              echo
+              echo "ヒントのマーカーは削除しました。コードはあなたのものです。"
+            } > reviewbody.md
+
+            gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/comments" \
+              -F body=@reviewbody.md > /dev/null
+            echo "posted commit comment on ${HEAD_SHA}"
+            cat reviewbody.md >> "$GITHUB_STEP_SUMMARY"
+            rm reviewbody.md review.md
           else
             echo "assistant produced no review"
           fi

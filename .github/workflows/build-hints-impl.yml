@@ -81,14 +81,14 @@ jobs:
             told=$(gh api "repos/${GITHUB_REPOSITORY}/comments?per_page=100" --jq "$jq_notice" 2>/dev/null || echo 1)
             if [ "$told" -eq 0 ]; then
               {
-                echo "### Assistance paused for today"
+                echo "### 本日の AI サポートは上限に達しました"
                 echo
-                echo "This repository has used its daily allowance of AI assistance."
-                echo "It resets at midnight UTC."
+                echo "このリポジトリは 1 日あたりの AI サポート回数を使い切りました。"
+                echo "UTC の 0 時にリセットされます。"
                 echo
-                echo "Until then: read the **first** error in the Actions log, not"
-                echo "the last -- later errors are usually knock-on effects."
-                echo "If you are stuck, ask an instructor."
+                echo "それまでは Actions のログを自分で読んでください。**最初の**"
+                echo "エラーを見ます。後ろのエラーはその波及であることがほとんどです。"
+                echo "行き詰まったら教員に相談してください。"
                 echo
                 echo "<!-- ai-assist-cap-notice -->"
               } > capnote.md
@@ -348,6 +348,7 @@ jobs:
           BRANCH: ${{ github.event.workflow_run.head_branch }}
           RUN_ID: ${{ github.event.workflow_run.id }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          SERVER_URL: ${{ github.server_url }}
         run: |
           set -euo pipefail
           # The branch may have moved while the agent was thinking. The guard
@@ -387,17 +388,22 @@ jobs:
           #
           # The pointer, never the hint itself. Repeating the text here would
           # put help back in a browser tab, which is the thing this replaced.
+          # The link points at the commit just pushed, which is the one
+          # carrying the hint -- not HEAD_SHA, which is the build that failed.
+          hint_sha=$(git rev-parse HEAD)
           {
-            echo "### A hint is waiting in your code"
+            echo "### ヒントが届いています"
             echo
-            echo "The assistant read the failed build and left a comment next to"
-            echo "the line that needs attention."
+            echo "失敗したビルドを読んで、問題のある行のすぐ上に"
+            echo "コメントを入れました。"
             echo
-            echo "Run \`git pull\`, then look for a line starting with"
-            echo "\`AI-HINT\` near the error."
+            echo "\`git pull\` を実行して、エラーの近くにある"
+            echo "\`AI-HINT\` で始まる行を探してください。"
             echo
-            echo "It is a hint, not the answer -- working out the fix is the"
-            echo "exercise. The marker is cleared for you once the build passes."
+            echo "[このコミットを見る](${SERVER_URL}/${GITHUB_REPOSITORY}/commit/${hint_sha})"
+            echo
+            echo "これは答えではなくヒントです。修正を自分で考えることが"
+            echo "演習です。マーカーはビルドが成功した時点で自動的に削除されます。"
           } > hintnote.md
           if gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/comments" -F body=@hintnote.md > /dev/null 2>&1; then
             echo "told the student a hint is waiting"
