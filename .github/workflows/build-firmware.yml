@@ -48,6 +48,37 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
+      - name: Check sources are UTF-8
+        run: |
+          set -euo pipefail
+
+          # Hints are written into these files in Japanese, so from now on the
+          # sources carry non-ASCII bytes. A Japanese Windows editor that
+          # re-saves as Shift-JIS would mangle them, and -Werror would then
+          # turn the assistant's own help into a build error the student did
+          # not cause and cannot read. Fail here instead, before the compiler,
+          # with a message that says what to do.
+          python3 - <<'PY'
+          import pathlib, sys
+
+          bad = []
+          for path in list(pathlib.Path('.').rglob('*.c')) + \
+                      list(pathlib.Path('.').rglob('*.h')):
+              try:
+                  path.read_bytes().decode('utf8')
+              except UnicodeDecodeError as e:
+                  bad.append((path, e.start))
+          for path, off in bad:
+              print(f'::error file={path}::{path} \u306f UTF-8 \u3067\u306f\u3042\u308a\u307e\u305b\u3093'
+                    f'\uff08{off} \u30d0\u30a4\u30c8\u76ee\uff09\u3002UTF-8 \u3067\u4fdd\u5b58\u3057\u76f4\u3057\u3066\u304f\u3060\u3055\u3044\u3002'
+                    f' / not valid UTF-8 at byte {off}; re-save the file as UTF-8')
+          if bad:
+              print('VS Code: \u53f3\u4e0b\u306e\u30a8\u30f3\u30b3\u30fc\u30c7\u30a3\u30f3\u30b0\u8868\u793a '
+                    '-> Save with Encoding -> UTF-8')
+              sys.exit(1)
+          print('all .c/.h files are valid UTF-8')
+          PY
+
       - name: Set up Python 3.12
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:

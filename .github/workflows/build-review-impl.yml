@@ -97,7 +97,10 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          # Pinned deliberately: the language quality of the review is
+          # now a user-visible property of this workflow.
           claude_args: >-
+            --model claude-haiku-4-5
             --allowedTools "Bash(git show:*),Bash(git log:*),Bash(git diff:*),Bash(gh run view:*),Read,Glob,Grep,Write"
           prompt: |
             You are a lab teaching assistant for an embedded systems course.
@@ -140,9 +143,25 @@ jobs:
             - If the code is genuinely fine, say that and stop. Do not invent
               criticism to fill space.
 
+            LANGUAGE
+            Write review.md in Japanese. The students and teachers on this
+            course are Japanese speakers.
+
+            Keep in English, exactly as they appear: anything the student must
+            type or will see verbatim in a compiler message -- keywords
+            (volatile, static), function names, register names (MSTPCRB), file
+            names (link.ld), flags (-Werror), and any quoted diagnostic.
+            Everything else is Japanese, concept vocabulary included: prefer
+            割り込み, ベクタテーブル, リンカ, レジスタ over the English words.
+
+            The test: if the student has to type it or look it up in the
+            manual, it stays English; if it is an idea they must understand,
+            it is Japanese. Never translate an identifier.
+
             TONE AND SHAPE
-            Address the student directly. Under 200 words. Markdown, no
-            heading larger than ###. Encouraging and matter-of-fact.
+            Address the student directly, in です/ます form. Under 400
+            characters. Markdown, no heading larger than ###. Encouraging and
+            matter-of-fact.
 
             You do not run git commands that write, and you do not push or
             comment anything yourself. Write review.md and stop.
