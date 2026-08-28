@@ -55,6 +55,96 @@ jobs:
             exit 0
           fi
 
+          # A build can fail before the compiler ever runs: a source file in
+          # the wrong encoding, a toolchain install that failed, a Renode
+          # download that timed out. None of those are the student's code, so
+          # there is no diagnostic to explain -- the model reads the log,
+          # correctly edits nothing, and the invocation is counted anyway. The
+          # student loses a slot from their daily allowance for a failure that
+          # was never theirs.
+          #
+          # The compile step's own conclusion says this outright. GitHub marks
+          # it "skipped" when an earlier step failed, so a skipped compile
+          # means the compiler never spoke. Only one step name is relied on,
+          # and the failure mode if it is ever renamed is that the lookup
+          # misses and we proceed exactly as before -- so this can cost a
+          # wasted invocation, but never a lost hint.
+          jq_build='[.jobs[].steps[]? | select(.name == "Build") | .conclusion] | first // "absent"'
+          built=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${{ github.event.workflow_run.id }}/jobs" \
+                  --jq "$jq_build" 2>/dev/null || echo "absent")
+          echo "compile step conclusion: $built"
+          if [ "$built" = "skipped" ]; then
+            echo "the build failed before compiling; nothing to teach"
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+
+            # Say so. Every other thing this system does reaches the student
+            # through a commit comment, which GitHub notifies on by default;
+            # a failed run does not, because Actions email is opt-in. Leaving
+            # this one silent would give the weakest signal to the failure the
+            # student is least able to diagnose -- and, for an encoding fault,
+            # one caused by the assistant's own output.
+            jq_failed='[.jobs[].steps[]? | select(.conclusion == "failure") | .name] | first // ""'
+            failed=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${{ github.event.workflow_run.id }}/jobs" \
+                     --jq "$jq_failed" 2>/dev/null || echo "")
+            echo "failing step: $failed"
+
+            # Once per commit. A re-run of the same build must not post twice.
+            jq_told="[.[] | select(.body | contains(\"ai-assist-precompile-notice\"))] | length"
+            told=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/comments" \
+                   --jq "$jq_told" 2>/dev/null || echo 1)
+
+            if [ "$told" -eq 0 ]; then
+              if [ "$failed" = "Check sources are UTF-8" ]; then
+                {
+                  echo "### ファイルの文字コードを直してください"
+                  echo
+                  echo "ファイルが UTF-8 で保存されていないため、コンパイルの前に"
+                  echo "ビルドが止まりました。どのファイルの何バイト目かは Actions のログに"
+                  echo "出ています。"
+                  echo
+                  echo "VS Code なら、右下のエンコーディング表示をクリックし"
+                  echo "**Save with Encoding → UTF-8** を選んで保存し直してください。"
+                  echo
+                  echo "コードそのものは間違っていないかもしれません。文字コードだけの問題です。"
+                  echo "対象は .c や .h だけではなく、Makefile、platform.json、"
+                  echo "テストの .py など、管理されているテキストファイルすべてです。"
+                  echo
+                  echo "*A tracked file is not saved as UTF-8, so the build stopped before"
+                  echo "compiling. The Actions log names the file and the byte. In VS Code:"
+                  echo "click the encoding indicator, then Save with Encoding -> UTF-8.*"
+                  echo
+                  echo "<!-- ai-assist-precompile-notice -->"
+                } > precompile.md
+              else
+                {
+                  echo "### ビルドはコンパイル前に止まりました"
+                  echo
+                  echo "\`${failed}\` のステップで失敗したため、コンパイラは動いていません。"
+                  echo "これはあなたのコードの問題ではなく、ツールチェーンのインストールや"
+                  echo "ダウンロードなど、環境側の失敗です。"
+                  echo
+                  echo "Actions のページから **Re-run jobs** を試してください。"
+                  echo "何度も繰り返す場合は教員に伝えてください。"
+                  echo
+                  echo "*The build stopped before the compiler ran, so this is not your"
+                  echo "code. Try Re-run jobs; tell an instructor if it keeps happening.*"
+                  echo
+                  echo "<!-- ai-assist-precompile-notice -->"
+                } > precompile.md
+              fi
+              if gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/comments" \
+                   -F body=@precompile.md > /dev/null 2>&1; then
+                echo "told the student the build stopped before compiling"
+              else
+                echo "::warning::could not post the pre-compile notice"
+              fi
+              rm -f precompile.md
+            else
+              echo "already told the student about this commit"
+            fi
+            exit 0
+          fi
+
           # Spend limit. Only runs that actually consulted the model cost
           # anything, so a run that stopped at this guard must not consume the
           # budget. Counting runs rather than invocations made the limit far
@@ -62,7 +152,11 @@ jobs:
           today=$(date -u +%Y-%m-%d)
           jq_today="[.[] | select(.createdAt | startswith(\"$today\"))] | .[].databaseId"
           ids=$(gh run list --workflow build-hints.yml --limit 60 --json databaseId,createdAt --jq "$jq_today")
-          jq_used='[.jobs[].steps[]? | select(.name | test("claude-code-action")) | select(.conclusion == "success")] | length'
+          # A composite action contributes two steps: "Run <action>" and
+          # "Post Run <action>". Both match the action's name and both succeed,
+          # so matching on the name alone counted every invocation twice and
+          # DAILY_CAP: 10 allowed only five. Exclude the post step.
+          jq_used='[.jobs[].steps[]? | select(.name | test("claude-code-action")) | select(.name | startswith("Post") | not) | select(.conclusion == "success")] | length'
           used=0
           for id in $ids; do
             n=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/$id/jobs" --jq "$jq_used" 2>/dev/null || echo 0)
@@ -153,7 +247,24 @@ jobs:
             warning is a build error.
 
             WHAT TO DO
-            Find the FIRST real error. Later errors are usually consequences.
+
+            STEP 1, ALWAYS, BEFORE ANYTHING ELSE. Run this exact command:
+
+              gh run list --workflow build.yml --limit 10 --json conclusion,headSha,displayTitle
+
+            Count how many of the most recent runs failed in a row, and say
+            that number out loud in your reasoning, like "consecutive recent
+            failures: 3". Do this even when the fix looks obvious. You cannot
+            judge how specific your hint should be without it, and a student on
+            their fourth identical failure needs something quite different from
+            one on their first.
+
+            This step is not optional and not conditional. If you skip it you
+            will hand the same hint to a student who has already ignored it
+            three times.
+
+            STEP 2. Find the FIRST real error. Later errors are usually
+            consequences.
 
             Decide what kind of failure it is:
             - Infrastructure or CI: toolchain install failed, a download timed
@@ -228,11 +339,22 @@ jobs:
               compact; two short sentences usually fit where one English
               sentence did.
 
-            ESCALATE IF THEY ARE STUCK. Check recent runs with
-            `gh run list --limit 10`. If the same error has failed two or three
-            times running, the earlier hint did not land, so get more specific
-            each time. Past four, say plainly in the marker that it is time to
-            ask an instructor.
+            ESCALATE. Use the number you counted in step 1. The same
+            error failing again means your previous hint did not land, so
+            repeating it is worthless -- change what you say each time:
+
+              1 failure    name the concept, ask the question
+              2 failures   say it is the same line as last time, and narrow it
+                           to a specific part of that line
+              3 failures   point at the exact character or token, still as a
+                           question
+              4 or more    stop hinting. Say plainly, in the marker, that this
+                           has not worked after several tries and that they
+                           should ask an instructor or TA to look at the line
+                           with them.
+
+            At four or more do NOT also give another hint. Handing over is the
+            help at that point.
 
             COMMON HERE: -Werror promoting an unused variable; `undefined
             reference` from a file missing in SRCS; `region FLASH overflowed`;
@@ -313,13 +435,32 @@ jobs:
           git diff -U0 --ignore-space-at-eol | grep -E '^[+-]' | grep -vE '^(\+\+\+|---)' \
             > /tmp/changed.txt || true
 
+          # A marker can match the pattern and still be invalid C. The regex
+          # is greedy, so `.*\*/` matches through to the LAST */ on the line
+          # while the compiler stops at the FIRST. A hint whose text contains
+          # */ therefore closes its own comment early and leaves the remainder
+          # as bare code, so the student's next build fails with a syntax error
+          # they did not write and cannot interpret. An opening /* is rejected
+          # for the same reason: GCC warns on it, and -Werror makes that fatal.
+          #
+          # The prompt forbids both, and a real run produced one anyway. That
+          # is the argument for checking rather than asking.
           while IFS= read -r line; do
             [ -z "$line" ] && continue
             body=${line:1}
             if ! printf '%s\n' "$body" | grep -qE "$HINT_RE"; then
               echo "::error::non-marker line in diff: $line"
               bad=1
+              continue
             fi
+            inner=${body#*AI-HINT:}
+            inner=${inner%\*/*}
+            case "$inner" in
+              *'*/'*|*'/*'*)
+                echo "::error::marker text would close its own comment: $body"
+                bad=1
+                ;;
+            esac
           done < /tmp/changed.txt
 
           added=$(grep -c '^+' /tmp/changed.txt || true)

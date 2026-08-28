@@ -59,15 +59,31 @@ jobs:
           # not cause and cannot read. Fail here instead, before the compiler,
           # with a message that says what to do.
           python3 - <<'PY'
-          import pathlib, sys
+          import pathlib, subprocess, sys
 
-          bad = []
-          for path in list(pathlib.Path('.').rglob('*.c')) + \
-                      list(pathlib.Path('.').rglob('*.h')):
+          # Every tracked file, not a list of extensions. A student writes
+          # comments wherever they are working, and the non-C files fail
+          # worse: a Shift-JIS byte 0x5C in a Makefile is a line continuation
+          # that swallows the next line, and json.load simply refuses.
+          out = subprocess.run(['git', 'ls-files', '-z'],
+                               capture_output=True, check=True).stdout
+          tracked = [pathlib.Path(p.decode('utf8', 'surrogateescape'))
+                     for p in out.split(b'\0') if p]
+
+          bad, checked = [], 0
+          for path in tracked:
+              if not path.is_file():
+                  continue
+              data = path.read_bytes()
+              # git's own heuristic for "binary": a NUL byte near the start.
+              if b'\0' in data[:8000]:
+                  continue
+              checked += 1
               try:
-                  path.read_bytes().decode('utf8')
+                  data.decode('utf8')
               except UnicodeDecodeError as e:
                   bad.append((path, e.start))
+
           for path, off in bad:
               print(f'::error file={path}::{path} \u306f UTF-8 \u3067\u306f\u3042\u308a\u307e\u305b\u3093'
                     f'\uff08{off} \u30d0\u30a4\u30c8\u76ee\uff09\u3002UTF-8 \u3067\u4fdd\u5b58\u3057\u76f4\u3057\u3066\u304f\u3060\u3055\u3044\u3002'
@@ -76,7 +92,7 @@ jobs:
               print('VS Code: \u53f3\u4e0b\u306e\u30a8\u30f3\u30b3\u30fc\u30c7\u30a3\u30f3\u30b0\u8868\u793a '
                     '-> Save with Encoding -> UTF-8')
               sys.exit(1)
-          print('all .c/.h files are valid UTF-8')
+          print(f'all {checked} tracked text files are valid UTF-8')
           PY
 
       - name: Set up Python 3.12

@@ -75,7 +75,11 @@ jobs:
           today=$(date -u +%Y-%m-%d)
           jq_today="[.[] | select(.createdAt | startswith(\"$today\"))] | .[].databaseId"
           ids=$(gh run list --workflow build-review.yml --limit 60 --json databaseId,createdAt --jq "$jq_today")
-          jq_used='[.jobs[].steps[]? | select(.name | test("claude-code-action")) | select(.conclusion == "success")] | length'
+          # A composite action contributes two steps, "Run <action>" and
+          # "Post Run <action>". Both match the action's name and both succeed,
+          # so matching on the name alone counted every review twice and
+          # DAILY_CAP: 10 allowed only five. Exclude the post step.
+          jq_used='[.jobs[].steps[]? | select(.name | test("claude-code-action")) | select(.name | startswith("Post") | not) | select(.conclusion == "success")] | length'
           used=0
           for id in $ids; do
             n=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/$id/jobs" --jq "$jq_used" 2>/dev/null || echo 0)
