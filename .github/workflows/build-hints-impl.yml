@@ -448,6 +448,17 @@ jobs:
           while IFS= read -r line; do
             [ -z "$line" ] && continue
             body=${line:1}
+            # A whitespace-only added or removed line. The raw diff line for an
+            # added blank line is "+", which is not empty, so the check above
+            # does not catch it and the marker test below then rejects the
+            # entire push -- the student gets no hint at all and a daily-cap
+            # slot is spent regardless. Whitespace cannot change C semantics,
+            # which is already the stated reason for --ignore-space-at-eol on
+            # this same diff, so it is tolerated here rather than treated as an
+            # edit to the code.
+            if [ -z "$(printf '%s' "$body" | tr -d '[:space:]')" ]; then
+              continue
+            fi
             if ! printf '%s\n' "$body" | grep -qE "$HINT_RE"; then
               echo "::error::non-marker line in diff: $line"
               bad=1
